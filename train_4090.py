@@ -13,6 +13,7 @@ import numpy as np
 from datetime import datetime
 import logging
 from tqdm import tqdm
+import argparse
 import wandb  # 可选：用于更详细的日志记录
 
 # 添加模型路径
@@ -505,12 +506,50 @@ class RTX4090Trainer:
             torch.save(checkpoint, os.path.join(self.config.output_dir, f'checkpoint_epoch_{epoch+1}.pth'))
 
 
+def parse_args():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(description='训练OverLoCK模型 - RTX 4090优化版')
+    parser.add_argument('--data_dir', type=str, default=None, help='数据集路径')
+    parser.add_argument('--image_size', type=int, default=None, help='图像尺寸')
+    parser.add_argument('--batch_size', type=int, default=None, help='批大小')
+    parser.add_argument('--epochs', type=int, default=None, help='训练轮数')
+    parser.add_argument('--learning_rate', type=float, default=None, help='学习率')
+    parser.add_argument('--resume', type=str, default=None, help='恢复训练的检查点路径')
+    parser.add_argument('--model_name', type=str, default=None, choices=['overlock_t', 'overlock_s', 'overlock_b', 'overlock_xt'], help='模型名称')
+    parser.add_argument('--use_wandb', action='store_true', help='是否使用wandb')
+
+    return parser.parse_args()
+
+
 def main():
     """主函数"""
+    # 解析命令行参数
+    args = parse_args()
+
+    # 加载配置
     config = Config()
 
+    # 用命令行参数覆盖配置
+    if args.data_dir is not None:
+        config.data_dir = args.data_dir
+        # 更新数据集名称和输出目录
+        config.dataset_name = os.path.basename(config.data_dir)
+        config.output_dir = f'outputs/{config.dataset_name}'
+    if args.image_size is not None:
+        config.image_size = args.image_size
+    if args.batch_size is not None:
+        config.batch_size = args.batch_size
+    if args.epochs is not None:
+        config.epochs = args.epochs
+    if args.learning_rate is not None:
+        config.learning_rate = args.learning_rate
+    if args.resume is not None:
+        config.resume = args.resume
+    if args.model_name is not None:
+        config.model_name = args.model_name
+
     # 4090特定优化
-    config.use_wandb = False  # 可选：设置为True使用wandb
+    config.use_wandb = args.use_wandb
 
     trainer = RTX4090Trainer(config)
     trainer.train()

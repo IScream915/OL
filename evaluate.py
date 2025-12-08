@@ -9,6 +9,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
 from tqdm import tqdm
+import argparse
 
 sys.path.append('models')
 
@@ -18,18 +19,25 @@ from dataset import RSITMDDataset, get_transforms
 
 def load_model(checkpoint_path, config):
     """加载训练好的模型"""
-    # 创建模型
-    if config.model_name == 'overlock_b':
-        model = overlock_b(pretrained=False, num_classes=config.num_classes)
-    elif config.model_name == 'overlock_s':
-        model = overlock_s(pretrained=False, num_classes=config.num_classes)
-    elif config.model_name == 'overlock_t':
-        model = overlock_t(pretrained=False, num_classes=config.num_classes)
-    elif config.model_name == 'overlock_xt':
-        model = overlock_xt(pretrained=False, num_classes=config.num_classes)
-
     # 加载检查点
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
+
+    # 从checkpoint中获取num_classes
+    if 'config' in checkpoint and 'num_classes' in checkpoint['config']:
+        num_classes = checkpoint['config']['num_classes']
+    else:
+        num_classes = config.num_classes
+
+    # 创建模型
+    if config.model_name == 'overlock_b':
+        model = overlock_b(pretrained=False, num_classes=num_classes)
+    elif config.model_name == 'overlock_s':
+        model = overlock_s(pretrained=False, num_classes=num_classes)
+    elif config.model_name == 'overlock_t':
+        model = overlock_t(pretrained=False, num_classes=num_classes)
+    elif config.model_name == 'overlock_xt':
+        model = overlock_xt(pretrained=False, num_classes=num_classes)
+
     model.load_state_dict(checkpoint['model_state_dict'])
     model.to(config.device)
     model.eval()
@@ -62,6 +70,9 @@ def evaluate_model(model, test_loader, config):
 
 def plot_confusion_matrix(cm, class_names, output_path):
     """绘制混淆矩阵"""
+    # 将class_names转换为列表
+    class_names = list(class_names)
+
     plt.figure(figsize=(15, 12))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
                 xticklabels=class_names, yticklabels=class_names)
@@ -77,6 +88,9 @@ def plot_class_distribution(targets, class_names, output_path):
     """绘制类别分布"""
     unique, counts = np.unique(targets, return_counts=True)
 
+    # 将class_names转换为列表
+    class_names = list(class_names)
+
     plt.figure(figsize=(15, 8))
     plt.bar(range(len(unique)), counts)
     plt.xticks(range(len(unique)), [class_names[i] for i in unique], rotation=45, ha='right')
@@ -88,21 +102,53 @@ def plot_class_distribution(targets, class_names, output_path):
     plt.close()
 
 
+def parse_args():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(description='评估OverLoCK模型')
+    parser.add_argument('--data_dir', type=str, default='datasets/RSITMD', help='数据集路径')
+    parser.add_argument('--checkpoint', type=str, default=None, help='模型检查点路径')
+    parser.add_argument('--model_name', type=str, default='overlock_b',
+                        choices=['overlock_t', 'overlock_s', 'overlock_b', 'overlock_xt'],
+                        help='模型名称')
+    parser.add_argument('--batch_size', type=int, default=32, help='批大小')
+    parser.add_argument('--image_size', type=int, default=224, help='图像尺寸')
+    parser.add_argument('--output_dir', type=str, default=None, help='评估结果输出目录')
+
+    return parser.parse_args()
+
+
 def main():
     """主函数"""
+    # 解析命令行参数
+    args = parse_args()
+
+    # 配置对象
     config = type('Config', (), {})()
 
-    # 配置参数（从训练配置继承或修改）
-    config.data_dir = 'datasets/RSITMD'
-    config.model_name = 'overlock_b'
-    config.num_classes = 33
-    config.image_size = 224
-    config.batch_size = 32
+    # 从数据集路径提取数据集名称
+    dataset_name = os.path.basename(args.data_dir)
+
+    # 配置参数
+    config.data_dir = args.data_dir
+    config.model_name = args.model_name
+    config.image_size = args.image_size
+    config.batch_size = args.batch_size
     config.num_workers = 4
     config.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    config.num_classes = None  # 将从数据集获取
 
-    # 检查点路径
-    checkpoint_path = 'outputs/best_checkpoint.pth'
+    # 设置检查点路径
+    if args.checkpoint is None:
+        # 默认从对应数据集的输出目录读取
+        checkpoint_path = f'outputs/{dataset_name}/best_checkpoint.pth'
+    else:
+        checkpoint_path = args.checkpoint
+
+    # 设置输出目录
+    if args.output_dir is None:
+        output_dir = f'evaluation_results/{dataset_name}'
+    else:
+        output_dir = args.output_dir
 
     print(f"Evaluating model: {checkpoint_path}")
     print(f"Device: {config.device}")
@@ -146,54 +192,69 @@ def main():
     ))
 
     # 保存结果
-    os.makedirs('evaluation_results', exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
     # 保存分类报告
-    with open('evaluation_results/classification_report.json', 'w') as f:
+    with open(f'{output_dir}/classification_report.json', 'w') as f:
         json.dump(report, f, indent=4)
 
     # 绘制混淆矩阵
     cm = confusion_matrix(targets, preds)
     plot_confusion_matrix(cm, test_dataset.idx_to_class.values(),
-                         'evaluation_results/confusion_matrix.png')
+                         f'{output_dir}/confusion_matrix.png')
 
     # 绘制类别分布
     plot_class_distribution(targets, test_dataset.idx_to_class.values(),
-                          'evaluation_results/class_distribution.png')
+                          f'{output_dir}/class_distribution.png')
 
     # 保存预测结果
+    # 获取文件名列表，根据数据集的实际结构
+    try:
+        # 如果数据集有samples属性
+        filenames = [sample['filename'] for sample in test_dataset.samples]
+    except:
+        # 如果没有，尝试其他方式获取文件名
+        try:
+            filenames = [os.path.basename(path) for path in test_dataset.image_paths]
+        except:
+            # 如果都没有，使用索引作为文件名
+            filenames = [f'image_{i}.jpg' for i in range(len(targets))]
+
+    # 将idx_to_class转换为字典以便查找
+    idx_to_class = dict(test_dataset.idx_to_class)
+
     results_df = pd.DataFrame({
-        'filename': [sample['filename'] for sample in test_dataset.samples],
+        'filename': filenames,
         'true_label': targets,
         'predicted_label': preds,
-        'true_class': [test_dataset.idx_to_class[label] for label in targets],
-        'predicted_class': [test_dataset.idx_to_class[pred] for pred in preds],
+        'true_class': [idx_to_class[label] for label in targets],
+        'predicted_class': [idx_to_class[pred] for pred in preds],
         'confidence': [probs[i][preds[i]] for i in range(len(preds))]
     })
-    results_df.to_csv('evaluation_results/predictions.csv', index=False)
+    results_df.to_csv(f'{output_dir}/predictions.csv', index=False)
 
     # 按类别分析
     class_accuracy = {}
     for class_name, class_idx in test_dataset.class_to_idx.items():
         mask = targets == class_idx
-        if mask.sum() > 0:
+        if np.sum(mask) > 0:  # 使用np.sum而不是mask.sum
             class_acc = np.mean(preds[mask] == targets[mask])
             class_accuracy[class_name] = {
                 'accuracy': class_acc,
-                'support': mask.sum()
+                'support': int(np.sum(mask))
             }
 
     # 保存类别准确率
     class_acc_df = pd.DataFrame.from_dict(class_accuracy, orient='index')
     class_acc_df = class_acc_df.sort_values('accuracy', ascending=False)
-    class_acc_df.to_csv('evaluation_results/per_class_accuracy.csv')
+    class_acc_df.to_csv(f'{output_dir}/per_class_accuracy.csv')
 
     print("\nPer-class accuracy (top 10 best):")
     print(class_acc_df.head(10))
     print("\nPer-class accuracy (bottom 10 worst):")
     print(class_acc_df.tail(10))
 
-    print("\nEvaluation results saved to 'evaluation_results/' directory")
+    print(f"\nEvaluation results saved to '{output_dir}/' directory")
 
 
 if __name__ == '__main__':
