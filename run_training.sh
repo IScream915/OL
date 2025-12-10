@@ -13,6 +13,9 @@ nvidia-smi
 export CUDA_VISIBLE_DEVICES=0
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 
+# 使用OL conda环境的Python
+PYTHON_BIN="/root/miniconda3/envs/OL/bin/python"
+
 # 检查可用的数据集
 echo "检测可用的数据集..."
 available_datasets=()
@@ -74,21 +77,21 @@ read -p "请输入选择 (1-4): " choice
 case $choice in
     1)
         echo "运行快速测试模式..."
-        python train.py --epochs 5 --batch_size 16 --image_size 224 --data_dir datasets/$selected_dataset
+        $PYTHON_BIN train.py --epochs 5 --batch_size 16 --image_size 224 --data_dir datasets/$selected_dataset
         ;;
     2)
         echo "运行标准训练模式..."
-        python train_4090.py --data_dir datasets/$selected_dataset
+        $PYTHON_BIN train_4090.py --data_dir datasets/$selected_dataset
         ;;
     3)
         echo "运行高性能训练模式..."
-        python train_4090.py --data_dir datasets/$selected_dataset --image_size 256 --batch_size 16
+        $PYTHON_BIN train_4090.py --data_dir datasets/$selected_dataset --image_size 256 --batch_size 16
         ;;
     4)
         read -p "请输入检查点路径: " checkpoint_path
         if [ -f "$checkpoint_path" ]; then
             echo "恢复训练从: $checkpoint_path"
-            python train_4090.py --data_dir datasets/$selected_dataset --resume $checkpoint_path
+            $PYTHON_BIN train_4090.py --data_dir datasets/$selected_dataset --resume $checkpoint_path
         else
             echo "错误：检查点文件不存在！"
             exit 1
@@ -106,4 +109,4 @@ echo "最佳模型保存在: outputs/$selected_dataset/best_checkpoint.pth"
 echo "训练日志保存在: outputs/$selected_dataset/"
 echo ""
 echo "运行以下命令评估模型："
-echo "python evaluate.py --data_dir datasets/$selected_dataset"
+echo "$PYTHON_BIN evaluate.py --data_dir datasets/$selected_dataset"

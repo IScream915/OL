@@ -47,14 +47,34 @@ class RSITMDDataset(Dataset):
 
         # 加载图像
         img_path = os.path.join(self.data_dir, 'images', sample['filename'])
-        image = Image.open(img_path).convert('RGB')
+        try:
+            image = Image.open(img_path).convert('RGB')
+        except Exception as e:
+            # 遇到坏图时的容错处理
+            print(f"Warning: Could not load image {img_path}: {e}")
+            image = Image.new('RGB', (256, 256), (0, 0, 0))
 
         # 应用变换
         if self.transform:
             image = self.transform(image)
 
         # 获取标签
-        label = sample['label']
+        label = int(sample['label'])
+
+        # --- [关键修复] 强制修正越界标签 ---
+        num_classes = len(self.class_to_idx)  # 应该是 33
+
+        # 情况1: 标签是 1-based (1-33)，需要减 1
+        if label >= num_classes:
+            # print(f"Fixing label {label} -> {label-1}") # 调试信息
+            label = label - 1
+
+        # 情况2: 减完还是越界，或者本来就是离谱的数值 -> 强制归零 (或其他安全值)
+        if label >= num_classes or label < 0:
+            print(
+                f"Error: Label {label} is still out of bounds (0-{num_classes - 1}) for {sample['filename']}. Resetting to 0.")
+            label = 0
+        # --------------------------------
 
         return image, label
 

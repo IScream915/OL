@@ -149,7 +149,7 @@ class RTX4090Trainer:
                 brightness=0.3,
                 contrast=0.3,
                 saturation=0.3,
-                hue=0.1
+                # hue=0.1
             ),
             transforms.RandomApply([transforms.GaussianBlur(3, sigma=(0.1, 2.0))], p=0.2),
             transforms.ToTensor(),
@@ -194,10 +194,10 @@ class RTX4090Trainer:
 
         model = model.to(self.device)
 
-        # 编译模型（PyTorch 2.0+）
-        if hasattr(torch, 'compile'):
-            self.logger.info("Compiling model with torch.compile...")
-            model = torch.compile(model)
+        # # 编译模型（PyTorch 2.0+）
+        # if hasattr(torch, 'compile'):
+        #     self.logger.info("Compiling model with torch.compile...")
+        #     model = torch.compile(model)
 
         # 打印模型信息
         total_params = sum(p.numel() for p in model.parameters())
@@ -280,11 +280,41 @@ class RTX4090Trainer:
         # 使用tqdm显示进度
         pbar = tqdm(self.train_loader, desc=f'Epoch {epoch+1}/{self.config.epochs}')
 
+        # for batch_idx, (inputs, targets) in enumerate(pbar):
+        #     inputs, targets = inputs.to(self.device, non_blocking=True), targets.to(self.device, non_blocking=True)
+        #
+        #     optimizer.zero_grad(set_to_none=True)  # 更高效的梯度清零
+
         for batch_idx, (inputs, targets) in enumerate(pbar):
             inputs, targets = inputs.to(self.device, non_blocking=True), targets.to(self.device, non_blocking=True)
 
-            optimizer.zero_grad(set_to_none=True)  # 更高效的梯度清零
+            # --- [终极保险] 强制检查并修正标签越界 ---
+            # 获取模型实际的分类头大小
+            if hasattr(model, 'head') and isinstance(model.head, nn.Sequential):
+                # OverLoCK 的 head 是 Sequential, 最后一层是 Conv2d
+                # 我们尝试获取最后一层的输出通道数
+                valid_num_classes = model.head[-1].out_channels
+            else:
+                # 备选方案：信任 config
+                valid_num_classes = self.config.num_classes
 
+            # 检查是否有越界标签
+            if targets.max() >= valid_num_classes:
+                # 打印一次警告（防止刷屏，只在第一次遇到时打印）
+                if not hasattr(self, '_warned_label_overflow'):
+                    self.logger.warning(
+                        f"CRITICAL: Found labels >= {valid_num_classes} (Max: {targets.max()}). Auto-fixing...")
+                    self._warned_label_overflow = True
+
+                # 强制修正：所有越界标签 clamp 到 0 到 num_classes-1 之间
+                # 或者如果有 1-based 偏移，尝试减 1
+                if targets.min() > 0 and targets.max() == valid_num_classes:
+                    targets = targets - 1
+                else:
+                    targets = torch.clamp(targets, 0, valid_num_classes - 1)
+            # ------------------------------------------
+
+            optimizer.zero_grad(set_to_none=True)  # 更高效的梯度清零
             # # 混合精度训练
             # with autocast():
             #     outputs = model(inputs)
