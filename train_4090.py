@@ -497,9 +497,7 @@ class RTX4090Trainer:
                 self.logger.info(f'New best validation accuracy: {best_val_acc:.2f}%')
             else:
                 epochs_no_improve += 1
-
-            # 定期保存
-            if (epoch + 1) % self.config.save_freq == 0:
+                # 仍然更新 latest_checkpoint
                 self.save_checkpoint(model, optimizer, scheduler, epoch, val_acc, False)
 
             # 早停
@@ -514,7 +512,7 @@ class RTX4090Trainer:
         self.logger.info(f'Training completed. Best validation accuracy: {best_val_acc:.2f}%')
 
     def save_checkpoint(self, model, optimizer, scheduler, epoch, val_acc, is_best):
-        """保存检查点"""
+        """保存检查点 - 只保存 best 和 latest"""
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
@@ -530,10 +528,6 @@ class RTX4090Trainer:
         # 保存最佳
         if is_best:
             torch.save(checkpoint, os.path.join(self.config.output_dir, 'best_checkpoint.pth'))
-
-        # 定期保存
-        if (epoch + 1) % self.config.save_freq == 0:
-            torch.save(checkpoint, os.path.join(self.config.output_dir, f'checkpoint_epoch_{epoch+1}.pth'))
 
 
 def parse_args():
@@ -565,6 +559,8 @@ def main():
         # 更新数据集名称和输出目录
         config.dataset_name = os.path.basename(config.data_dir)
         config.output_dir = f'outputs/{config.dataset_name}'
+        # 重新获取类别数
+        config.num_classes = config._get_num_classes()
     if args.image_size is not None:
         config.image_size = args.image_size
     if args.batch_size is not None:
