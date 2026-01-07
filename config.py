@@ -16,13 +16,18 @@ class Config:
         self.pin_memory = True  # 加速数据传输到GPU
         self.persistent_workers = True  # 保持worker进程存活
 
-        # 根据数据集名称动态设置输出目录
-        self.output_dir = f'outputs/{self.dataset_name}'
-
         # 模型配置
         self.model_name = 'overlock_b'  # 可选: overlock_xt, overlock_t, overlock_s, overlock_b
-        self.num_classes = self._get_num_classes()  # 自动从数据集读取类别数
         self.pretrained_weights = 'weights/overlock_b_in1k_224.pth'
+
+        # 根据数据集名称动态设置输出目录和类别数（延迟到__init__最后执行）
+        self._update_dataset_paths()
+
+    def _update_dataset_paths(self):
+        """根据当前data_dir更新dataset_name、output_dir和num_classes"""
+        self.dataset_name = os.path.basename(self.data_dir)
+        self.output_dir = f'outputs/{self.dataset_name}'
+        self.num_classes = self._get_num_classes()
 
         # 训练配置
         self.epochs = 100

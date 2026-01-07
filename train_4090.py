@@ -556,11 +556,8 @@ def main():
     # 用命令行参数覆盖配置
     if args.data_dir is not None:
         config.data_dir = args.data_dir
-        # 更新数据集名称和输出目录
-        config.dataset_name = os.path.basename(config.data_dir)
-        config.output_dir = f'outputs/{config.dataset_name}'
-        # 重新获取类别数
-        config.num_classes = config._get_num_classes()
+        # 更新数据集相关路径和类别数
+        config._update_dataset_paths()
     if args.image_size is not None:
         config.image_size = args.image_size
     if args.batch_size is not None:

@@ -85,7 +85,7 @@ case $choice in
         ;;
     3)
         echo "运行高性能训练模式..."
-        $PYTHON_BIN train_4090.py --data_dir datasets/$selected_dataset --image_size 256 --batch_size 128
+        $PYTHON_BIN train_4090.py --data_dir datasets/$selected_dataset --image_size 256 --batch_size 32
         ;;
     4)
         read -p "请输入检查点路径: " checkpoint_path

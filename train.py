@@ -353,8 +353,8 @@ def main():
         config.learning_rate = args.learning_rate
     if args.data_dir is not None:
         config.data_dir = args.data_dir
-        # 重新获取类别数
-        config.num_classes = config._get_num_classes()
+        # 更新数据集相关路径和类别数
+        config._update_dataset_paths()
     if args.output_dir is not None:
         config.output_dir = args.output_dir
     if args.resume is not None:
