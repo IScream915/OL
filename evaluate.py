@@ -23,12 +23,19 @@ def load_model(checkpoint_path, config):
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
 
     # 从checkpoint中获取num_classes
+    checkpoint_num_classes = None
     if 'config' in checkpoint and 'num_classes' in checkpoint['config']:
-        num_classes = checkpoint['config']['num_classes']
-    else:
-        num_classes = config.num_classes
+        checkpoint_num_classes = checkpoint['config']['num_classes']
 
-    # 创建模型
+    # 使用config中的num_classes（已经从数据集获取）
+    num_classes = config.num_classes
+
+    # 检查类别数是否匹配
+    if checkpoint_num_classes is not None and checkpoint_num_classes != num_classes:
+        print(f"WARNING: Checkpoint has {checkpoint_num_classes} classes, but dataset has {num_classes} classes.")
+        print(f"Reinitializing the classification head to match dataset classes.")
+
+    # 创建模型（使用数据集的类别数）
     if config.model_name == 'overlock_b':
         model = overlock_b(pretrained=False, num_classes=num_classes)
     elif config.model_name == 'overlock_s':
@@ -38,7 +45,25 @@ def load_model(checkpoint_path, config):
     elif config.model_name == 'overlock_xt':
         model = overlock_xt(pretrained=False, num_classes=num_classes)
 
-    model.load_state_dict(checkpoint['model_state_dict'])
+    # 加载权重，处理类别数不匹配的情况
+    model_state_dict = checkpoint['model_state_dict']
+
+    if checkpoint_num_classes != num_classes:
+        # 过滤掉分类器层的权重
+        filtered_state_dict = {}
+        for k, v in model_state_dict.items():
+            if 'head' not in k and 'fc' not in k and 'classifier' not in k:
+                filtered_state_dict[k] = v
+        # 只加载骨干网络权重，分类头使用随机初始化
+        model_dict = model.state_dict()
+        model_dict.update(filtered_state_dict)
+        model.load_state_dict(model_dict)
+        print(f"Loaded backbone weights only. Classification head reinitialized for {num_classes} classes.")
+    else:
+        # 类别数匹配，加载全部权重
+        model.load_state_dict(model_state_dict)
+        print(f"Loaded full model weights from checkpoint.")
+
     model.to(config.device)
     model.eval()
 
@@ -164,6 +189,10 @@ def main():
     )
 
     print(f"Test dataset size: {len(test_dataset)}")
+    print(f"Number of classes in dataset: {len(test_dataset.class_to_idx)}")
+
+    # 更新 config.num_classes 为数据集实际的类别数
+    config.num_classes = len(test_dataset.class_to_idx)
 
     # 加载模型
     model, epoch = load_model(checkpoint_path, config)
@@ -176,19 +205,29 @@ def main():
     # 整体指标
     accuracy = np.mean(preds == targets)
 
+    # 获取实际存在的标签
+    unique_labels = sorted(np.unique(np.concatenate([targets, preds])))
+    idx_to_class_dict = dict(test_dataset.idx_to_class)
+
+    # 只对实际存在的标签生成target_names
+    actual_target_names = [idx_to_class_dict[i] for i in unique_labels]
+
     # 详细分类报告
     report = classification_report(
         targets, preds,
-        target_names=test_dataset.idx_to_class.values(),
+        labels=unique_labels,
+        target_names=actual_target_names,
         output_dict=True
     )
 
     # 打印结果
     print(f"\nOverall Accuracy: {accuracy:.4f}")
+    print(f"\nNote: Found {len(unique_labels)} classes in data vs {len(test_dataset.class_to_idx)} in class_to_idx.json")
     print("\nClassification Report:")
     print(classification_report(
         targets, preds,
-        target_names=test_dataset.idx_to_class.values()
+        labels=unique_labels,
+        target_names=actual_target_names
     ))
 
     # 保存结果
@@ -198,13 +237,13 @@ def main():
     with open(f'{output_dir}/classification_report.json', 'w') as f:
         json.dump(report, f, indent=4)
 
-    # 绘制混淆矩阵
-    cm = confusion_matrix(targets, preds)
-    plot_confusion_matrix(cm, test_dataset.idx_to_class.values(),
+    # 绘制混淆矩阵 - 只使用实际存在的类别
+    cm = confusion_matrix(targets, preds, labels=unique_labels)
+    plot_confusion_matrix(cm, actual_target_names,
                          f'{output_dir}/confusion_matrix.png')
 
-    # 绘制类别分布
-    plot_class_distribution(targets, test_dataset.idx_to_class.values(),
+    # 绘制类别分布 - 只使用实际存在的类别
+    plot_class_distribution(targets, actual_target_names,
                           f'{output_dir}/class_distribution.png')
 
     # 保存预测结果
