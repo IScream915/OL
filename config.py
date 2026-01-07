@@ -1,4 +1,5 @@
 import os
+import json
 
 
 class Config:
@@ -20,7 +21,7 @@ class Config:
 
         # 模型配置
         self.model_name = 'overlock_b'  # 可选: overlock_xt, overlock_t, overlock_s, overlock_b
-        self.num_classes = 33  # RSITMD有33个类别
+        self.num_classes = self._get_num_classes()  # 自动从数据集读取类别数
         self.pretrained_weights = 'weights/overlock_b_in1k_224.pth'
 
         # 训练配置
@@ -82,3 +83,20 @@ class Config:
         # 其他
         self.seed = 42
         self.print_freq = 100  # 打印频率
+
+    def _get_num_classes(self):
+        """从数据集目录自动读取类别数"""
+        class_to_idx_path = os.path.join(self.data_dir, 'class_to_idx.json')
+        if os.path.exists(class_to_idx_path):
+            try:
+                with open(class_to_idx_path, 'r') as f:
+                    class_to_idx = json.load(f)
+                num_classes = len(class_to_idx)
+                print(f"[Config] 自动检测到数据集 {self.dataset_name} 有 {num_classes} 个类别")
+                return num_classes
+            except Exception as e:
+                print(f"[Config] 读取 class_to_idx.json 失败: {e}，使用默认值 33")
+                return 33
+        else:
+            print(f"[Config] 未找到 {class_to_idx_path}，使用默认值 33")
+            return 33
