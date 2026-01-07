@@ -1,3 +1,5 @@
 .idea
 datasets
 weights
+outputs/*
+evaluation_results/*
