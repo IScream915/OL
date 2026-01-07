@@ -299,7 +299,7 @@ def validate(model, val_loader, criterion, config):
 
 
 def save_checkpoint(model, optimizer, scheduler, epoch, val_acc, config, is_best=False):
-    """保存检查点"""
+    """保存检查点 - 只保存 best 和 latest"""
     os.makedirs(config.output_dir, exist_ok=True)
 
     checkpoint = {
@@ -317,10 +317,6 @@ def save_checkpoint(model, optimizer, scheduler, epoch, val_acc, config, is_best
     # 保存最好的检查点
     if is_best:
         torch.save(checkpoint, os.path.join(config.output_dir, 'best_checkpoint.pth'))
-
-    # 定期保存
-    if (epoch + 1) % config.save_freq == 0:
-        torch.save(checkpoint, os.path.join(config.output_dir, f'checkpoint_epoch_{epoch+1}.pth'))
 
 
 def parse_args():
@@ -357,6 +353,8 @@ def main():
         config.learning_rate = args.learning_rate
     if args.data_dir is not None:
         config.data_dir = args.data_dir
+        # 重新获取类别数
+        config.num_classes = config._get_num_classes()
     if args.output_dir is not None:
         config.output_dir = args.output_dir
     if args.resume is not None:
