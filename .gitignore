@@ -3,3 +3,5 @@ datasets
 weights
 outputs/*
 evaluation_results/*
+heatmap/*
+__pycache__
