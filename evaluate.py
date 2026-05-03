@@ -4,7 +4,13 @@ import json
 import torch
 import torch.nn as nn
 import numpy as np
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import (
+    average_precision_score,
+    classification_report,
+    confusion_matrix,
+    precision_recall_curve,
+)
+from sklearn.preprocessing import label_binarize
 import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -127,6 +133,183 @@ def plot_class_distribution(targets, class_names, output_path):
     plt.close()
 
 
+def calculate_pr_metrics(targets, probs, idx_to_class):
+    """计算 one-vs-rest 多分类 PR 曲线和 AP 指标"""
+    targets = np.asarray(targets)
+    probs = np.asarray(probs)
+    present_labels = sorted(np.unique(targets))
+    y_true_matrix = label_binarize(targets, classes=present_labels)
+    if len(present_labels) == 1:
+        y_true_matrix = y_true_matrix.reshape(-1, 1)
+    elif len(present_labels) == 2:
+        y_true_matrix = np.column_stack([1 - y_true_matrix.ravel(), y_true_matrix.ravel()])
+
+    per_class_curves = []
+    per_class_rows = []
+
+    y_true_micro = []
+    y_score_micro = []
+
+    for label_pos, class_idx in enumerate(present_labels):
+        class_idx = int(class_idx)
+        y_true = y_true_matrix[:, label_pos].astype(int)
+        positives = int(y_true.sum())
+        negatives = int(len(y_true) - positives)
+        class_name = idx_to_class.get(class_idx, f"Class_{class_idx}")
+
+        row = {
+            'class_idx': class_idx,
+            'class_name': class_name,
+            'support': positives,
+            'average_precision': np.nan,
+            'status': 'skipped'
+        }
+
+        if class_idx >= probs.shape[1]:
+            row['status'] = 'missing_probability_column'
+            per_class_rows.append(row)
+            continue
+
+        if positives == 0 or negatives == 0:
+            row['status'] = 'single_class_only'
+            per_class_rows.append(row)
+            continue
+
+        y_score = probs[:, class_idx]
+        precision, recall, _ = precision_recall_curve(y_true, y_score)
+        average_precision = average_precision_score(y_true, y_score)
+
+        per_class_curves.append({
+            'class_idx': class_idx,
+            'class_name': class_name,
+            'precision': precision,
+            'recall': recall,
+            'average_precision': float(average_precision),
+            'support': positives
+        })
+
+        row['average_precision'] = float(average_precision)
+        row['status'] = 'ok'
+        per_class_rows.append(row)
+
+        y_true_micro.append(y_true)
+        y_score_micro.append(y_score)
+
+    micro_curve = None
+    micro_ap = np.nan
+    if y_true_micro and y_score_micro:
+        y_true_micro = np.concatenate(y_true_micro)
+        y_score_micro = np.concatenate(y_score_micro)
+        if y_true_micro.sum() > 0 and y_true_micro.sum() < len(y_true_micro):
+            precision, recall, _ = precision_recall_curve(y_true_micro, y_score_micro)
+            micro_ap = average_precision_score(y_true_micro, y_score_micro)
+            micro_curve = {
+                'precision': precision,
+                'recall': recall,
+                'average_precision': float(micro_ap)
+            }
+
+    valid_aps = [curve['average_precision'] for curve in per_class_curves]
+    macro_ap = float(np.mean(valid_aps)) if valid_aps else np.nan
+
+    summary = {
+        'num_samples': int(len(targets)),
+        'num_classes': int(probs.shape[1]),
+        'num_present_classes': int(len(present_labels)),
+        'num_valid_pr_classes': int(len(per_class_curves)),
+        'micro_average_precision': None if np.isnan(micro_ap) else float(micro_ap),
+        'macro_average_precision': None if np.isnan(macro_ap) else float(macro_ap)
+    }
+
+    return per_class_curves, per_class_rows, micro_curve, summary
+
+
+def plot_micro_pr_curve(micro_curve, output_path):
+    """绘制 micro-average PR 曲线"""
+    if micro_curve is None:
+        print("Warning: Skipping micro-average PR curve because it is not computable.")
+        return
+
+    plt.figure(figsize=(8, 6))
+    plt.plot(
+        micro_curve['recall'],
+        micro_curve['precision'],
+        color='tab:blue',
+        linewidth=2,
+        label=f"micro-average AP = {micro_curve['average_precision']:.4f}"
+    )
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Micro-average Precision-Recall Curve')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.grid(True, alpha=0.3)
+    plt.legend(loc='lower left')
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+
+
+def plot_per_class_pr_curves(per_class_curves, output_path):
+    """绘制每个类别的 PR 曲线"""
+    if not per_class_curves:
+        print("Warning: Skipping per-class PR curves because no class is computable.")
+        return
+
+    n_classes = len(per_class_curves)
+    fig_width = 11 if n_classes <= 20 else 14
+    fig_height = 8 if n_classes <= 20 else 10
+
+    plt.figure(figsize=(fig_width, fig_height))
+    colors = plt.cm.tab20(np.linspace(0, 1, min(n_classes, 20)))
+
+    for i, curve in enumerate(per_class_curves):
+        color = colors[i % len(colors)]
+        plt.plot(
+            curve['recall'],
+            curve['precision'],
+            linewidth=1.4,
+            color=color,
+            label=f"{curve['class_name']} (AP={curve['average_precision']:.3f})"
+        )
+
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Per-class Precision-Recall Curves')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.grid(True, alpha=0.3)
+
+    legend_fontsize = 8 if n_classes <= 20 else 6
+    plt.legend(
+        loc='upper left',
+        bbox_to_anchor=(1.02, 1),
+        borderaxespad=0.0,
+        fontsize=legend_fontsize
+    )
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+def save_pr_results(targets, probs, idx_to_class, output_dir):
+    """保存 PR 曲线图和 AP 指标"""
+    per_class_curves, per_class_rows, micro_curve, summary = calculate_pr_metrics(
+        targets, probs, idx_to_class
+    )
+
+    plot_micro_pr_curve(micro_curve, f'{output_dir}/pr_curve_micro.png')
+    plot_per_class_pr_curves(per_class_curves, f'{output_dir}/pr_curve_per_class.png')
+
+    per_class_ap_df = pd.DataFrame(per_class_rows)
+    per_class_ap_df.to_csv(f'{output_dir}/per_class_ap.csv', index=False)
+
+    with open(f'{output_dir}/pr_summary.json', 'w') as f:
+        json.dump(summary, f, indent=4)
+
+    print(f"\nPR curve results saved to '{output_dir}/' directory")
+
+
 def parse_args():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description='评估OverLoCK模型')
@@ -237,6 +420,10 @@ def main():
     with open(f'{output_dir}/classification_report.json', 'w') as f:
         json.dump(report, f, indent=4)
 
+    # 保存 PR 曲线和 AP 指标
+    idx_to_class = dict(test_dataset.idx_to_class)
+    save_pr_results(targets, probs, idx_to_class, output_dir)
+
     # 绘制混淆矩阵 - 只使用实际存在的类别
     cm = confusion_matrix(targets, preds, labels=unique_labels)
     plot_confusion_matrix(cm, actual_target_names,
@@ -258,9 +445,6 @@ def main():
         except:
             # 如果都没有，使用索引作为文件名
             filenames = [f'image_{i}.jpg' for i in range(len(targets))]
-
-    # 将idx_to_class转换为字典以便查找
-    idx_to_class = dict(test_dataset.idx_to_class)
 
     results_df = pd.DataFrame({
         'filename': filenames,
