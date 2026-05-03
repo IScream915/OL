@@ -6,9 +6,11 @@ import torch.nn as nn
 import numpy as np
 from sklearn.metrics import (
     average_precision_score,
+    auc,
     classification_report,
     confusion_matrix,
     precision_recall_curve,
+    roc_curve,
 )
 from sklearn.preprocessing import label_binarize
 import seaborn as sns
@@ -137,12 +139,7 @@ def calculate_pr_metrics(targets, probs, idx_to_class):
     """计算 one-vs-rest 多分类 PR 曲线和 AP 指标"""
     targets = np.asarray(targets)
     probs = np.asarray(probs)
-    present_labels = sorted(np.unique(targets))
-    y_true_matrix = label_binarize(targets, classes=present_labels)
-    if len(present_labels) == 1:
-        y_true_matrix = y_true_matrix.reshape(-1, 1)
-    elif len(present_labels) == 2:
-        y_true_matrix = np.column_stack([1 - y_true_matrix.ravel(), y_true_matrix.ravel()])
+    present_labels, y_true_matrix = get_binarized_targets(targets)
 
     per_class_curves = []
     per_class_rows = []
@@ -310,6 +307,193 @@ def save_pr_results(targets, probs, idx_to_class, output_dir):
     print(f"\nPR curve results saved to '{output_dir}/' directory")
 
 
+def get_binarized_targets(targets):
+    """将多分类标签转换为 one-vs-rest 二值矩阵"""
+    targets = np.asarray(targets)
+    present_labels = sorted(np.unique(targets))
+    y_true_matrix = label_binarize(targets, classes=present_labels)
+    if len(present_labels) == 1:
+        y_true_matrix = y_true_matrix.reshape(-1, 1)
+    elif len(present_labels) == 2:
+        y_true_matrix = np.column_stack([1 - y_true_matrix.ravel(), y_true_matrix.ravel()])
+
+    return present_labels, y_true_matrix
+
+
+def calculate_roc_metrics(targets, probs, idx_to_class):
+    """计算 one-vs-rest 多分类 ROC 曲线和 AUC 指标"""
+    targets = np.asarray(targets)
+    probs = np.asarray(probs)
+    present_labels, y_true_matrix = get_binarized_targets(targets)
+
+    per_class_curves = []
+    per_class_rows = []
+
+    y_true_micro = []
+    y_score_micro = []
+
+    for label_pos, class_idx in enumerate(present_labels):
+        class_idx = int(class_idx)
+        y_true = y_true_matrix[:, label_pos].astype(int)
+        positives = int(y_true.sum())
+        negatives = int(len(y_true) - positives)
+        class_name = idx_to_class.get(class_idx, f"Class_{class_idx}")
+
+        row = {
+            'class_idx': class_idx,
+            'class_name': class_name,
+            'support': positives,
+            'roc_auc': np.nan,
+            'status': 'skipped'
+        }
+
+        if class_idx >= probs.shape[1]:
+            row['status'] = 'missing_probability_column'
+            per_class_rows.append(row)
+            continue
+
+        if positives == 0 or negatives == 0:
+            row['status'] = 'single_class_only'
+            per_class_rows.append(row)
+            continue
+
+        y_score = probs[:, class_idx]
+        fpr, tpr, _ = roc_curve(y_true, y_score)
+        roc_auc = auc(fpr, tpr)
+
+        per_class_curves.append({
+            'class_idx': class_idx,
+            'class_name': class_name,
+            'fpr': fpr,
+            'tpr': tpr,
+            'roc_auc': float(roc_auc),
+            'support': positives
+        })
+
+        row['roc_auc'] = float(roc_auc)
+        row['status'] = 'ok'
+        per_class_rows.append(row)
+
+        y_true_micro.append(y_true)
+        y_score_micro.append(y_score)
+
+    micro_curve = None
+    micro_auc = np.nan
+    if y_true_micro and y_score_micro:
+        y_true_micro = np.concatenate(y_true_micro)
+        y_score_micro = np.concatenate(y_score_micro)
+        if y_true_micro.sum() > 0 and y_true_micro.sum() < len(y_true_micro):
+            fpr, tpr, _ = roc_curve(y_true_micro, y_score_micro)
+            micro_auc = auc(fpr, tpr)
+            micro_curve = {
+                'fpr': fpr,
+                'tpr': tpr,
+                'roc_auc': float(micro_auc)
+            }
+
+    valid_aucs = [curve['roc_auc'] for curve in per_class_curves]
+    macro_auc = float(np.mean(valid_aucs)) if valid_aucs else np.nan
+
+    summary = {
+        'num_samples': int(len(targets)),
+        'num_classes': int(probs.shape[1]),
+        'num_present_classes': int(len(present_labels)),
+        'num_valid_roc_classes': int(len(per_class_curves)),
+        'micro_roc_auc': None if np.isnan(micro_auc) else float(micro_auc),
+        'macro_roc_auc': None if np.isnan(macro_auc) else float(macro_auc)
+    }
+
+    return per_class_curves, per_class_rows, micro_curve, summary
+
+
+def plot_micro_roc_curve(micro_curve, output_path):
+    """绘制 micro-average ROC 曲线"""
+    if micro_curve is None:
+        print("Warning: Skipping micro-average ROC curve because it is not computable.")
+        return
+
+    plt.figure(figsize=(8, 6))
+    plt.plot(
+        micro_curve['fpr'],
+        micro_curve['tpr'],
+        color='tab:orange',
+        linewidth=2,
+        label=f"micro-average AUC = {micro_curve['roc_auc']:.4f}"
+    )
+    plt.plot([0, 1], [0, 1], color='gray', linestyle='--', linewidth=1)
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Micro-average ROC Curve')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.grid(True, alpha=0.3)
+    plt.legend(loc='lower right')
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+
+
+def plot_per_class_roc_curves(per_class_curves, output_path):
+    """绘制每个类别的 ROC 曲线"""
+    if not per_class_curves:
+        print("Warning: Skipping per-class ROC curves because no class is computable.")
+        return
+
+    n_classes = len(per_class_curves)
+    fig_width = 11 if n_classes <= 20 else 14
+    fig_height = 8 if n_classes <= 20 else 10
+
+    plt.figure(figsize=(fig_width, fig_height))
+    colors = plt.cm.tab20(np.linspace(0, 1, min(n_classes, 20)))
+
+    for i, curve in enumerate(per_class_curves):
+        color = colors[i % len(colors)]
+        plt.plot(
+            curve['fpr'],
+            curve['tpr'],
+            linewidth=1.4,
+            color=color,
+            label=f"{curve['class_name']} (AUC={curve['roc_auc']:.3f})"
+        )
+
+    plt.plot([0, 1], [0, 1], color='gray', linestyle='--', linewidth=1)
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Per-class ROC Curves')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.grid(True, alpha=0.3)
+
+    legend_fontsize = 8 if n_classes <= 20 else 6
+    plt.legend(
+        loc='upper left',
+        bbox_to_anchor=(1.02, 1),
+        borderaxespad=0.0,
+        fontsize=legend_fontsize
+    )
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+def save_roc_results(targets, probs, idx_to_class, output_dir):
+    """保存 ROC 曲线图和 AUC 指标"""
+    per_class_curves, per_class_rows, micro_curve, summary = calculate_roc_metrics(
+        targets, probs, idx_to_class
+    )
+
+    plot_micro_roc_curve(micro_curve, f'{output_dir}/roc_curve_micro.png')
+    plot_per_class_roc_curves(per_class_curves, f'{output_dir}/roc_curve_per_class.png')
+
+    per_class_auc_df = pd.DataFrame(per_class_rows)
+    per_class_auc_df.to_csv(f'{output_dir}/per_class_auc.csv', index=False)
+
+    with open(f'{output_dir}/roc_summary.json', 'w') as f:
+        json.dump(summary, f, indent=4)
+
+    print(f"\nROC curve results saved to '{output_dir}/' directory")
+
+
 def parse_args():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description='评估OverLoCK模型')
@@ -423,6 +607,7 @@ def main():
     # 保存 PR 曲线和 AP 指标
     idx_to_class = dict(test_dataset.idx_to_class)
     save_pr_results(targets, probs, idx_to_class, output_dir)
+    save_roc_results(targets, probs, idx_to_class, output_dir)
 
     # 绘制混淆矩阵 - 只使用实际存在的类别
     cm = confusion_matrix(targets, preds, labels=unique_labels)
